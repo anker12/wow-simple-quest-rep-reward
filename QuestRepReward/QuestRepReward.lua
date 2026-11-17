@@ -353,7 +353,6 @@ local function Record(questID, name, amount)
         QuestRepRewardDB[questID] = entry
     end
     entry[name] = (entry[name] or 0) + amount
-    print(("|cffffd200QuestRepReward:|r learned %+d %s for quest %d"):format(amount, name, questID))
 end
 
 local function Finish()
