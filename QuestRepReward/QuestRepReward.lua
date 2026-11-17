@@ -223,8 +223,7 @@ local function Update(rewardsFrame, questID, isLog)
         local b = c.buttons[i] or CreateRewardButton(c, c.small)
         c.buttons[i] = b
         b.factionName, b.amount, b.learned = r.name, r.amount, learned
-        local sign = r.amount > 0 and "|cff00ff00+" or "|cffff2020"
-        b.Name:SetText(r.name .. "\n" .. sign .. r.amount .. "|r")
+        b.Name:SetText(r.name .. "\n|cffffffff" .. ("%+d"):format(r.amount) .. "|r")
         rowH = rowH or (b:GetHeight() + 4)
         local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
         b:ClearAllPoints()
