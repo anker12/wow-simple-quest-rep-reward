@@ -6,6 +6,7 @@
 --      that quest in. Learned values are saved account-wide.
 
 local ADDON = ...
+local ICON = "Interface\\Icons\\Achievement_Reputation_01"
 local CAPTURE_WINDOW = 1.5 -- seconds around a turn-in that rep gains count
 
 QuestRepRewardDB = QuestRepRewardDB or {}
@@ -119,27 +120,58 @@ end
 
 local containers = {}
 
+local function CreateRewardButton(parent, small)
+    local template = small and "SmallItemButtonTemplate" or "LargeItemButtonTemplate"
+    local ok, b = pcall(CreateFrame, "Button", nil, parent, template)
+    if not ok or not b or not b.Icon or not b.Name then
+        -- Fallback: build the classic quest reward look by hand.
+        local size = small and 26 or 39
+        b = CreateFrame("Button", nil, parent)
+        b:SetSize(small and 140 or 147, size + 2)
+        b.Icon = b:CreateTexture(nil, "ARTWORK")
+        b.Icon:SetSize(size, size)
+        b.Icon:SetPoint("TOPLEFT")
+        b.NameFrame = b:CreateTexture(nil, "BACKGROUND")
+        b.NameFrame:SetTexture("Interface\\QuestFrame\\UI-QuestItemNameFrame")
+        b.NameFrame:SetSize(small and 100 or 128, small and 40 or 64)
+        b.NameFrame:SetPoint("LEFT", b.Icon, "RIGHT", -10, 0)
+        b.Name = b:CreateFontString(nil, "ARTWORK", small and "GameFontHighlightSmall" or "GameFontHighlight")
+        b.Name:SetSize(small and 90 or 90, size)
+        b.Name:SetPoint("LEFT", b.NameFrame, "LEFT", 15, 0)
+        b.Name:SetJustifyH("LEFT")
+    end
+    if b.Count then b.Count:Hide() end
+    b.Icon:SetTexture(ICON)
+    b:EnableMouse(true)
+    b:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(self.factionName or "", 1, 1, 1)
+        GameTooltip:AddLine(("%+d reputation"):format(self.amount or 0), 0, 1, 0)
+        if self.learned then
+            GameTooltip:AddLine("Learned from a previous turn-in.", 0.6, 0.6, 0.6, true)
+        end
+        GameTooltip:Show()
+    end)
+    b:SetScript("OnLeave", GameTooltip_Hide)
+    b:SetScript("OnClick", nil)
+    return b
+end
+
 local function GetContainer(rewardsFrame)
     local c = containers[rewardsFrame]
     if c then return c end
 
     c = CreateFrame("Frame", nil, rewardsFrame)
-    local small = (rewardsFrame == MapQuestInfoRewardsFrame)
-    c.small = small
-    -- Header copies the "You will receive:" line; the rewards are plain white text.
-    c.header = c:CreateFontString(nil, "ARTWORK", small and "GameFontNormalSmall" or "QuestFont")
+    c.small = (rewardsFrame == MapQuestInfoRewardsFrame)
+    c.buttons = {}
+    c.header = c:CreateFontString(nil, "ARTWORK", c.small and "GameFontNormalSmall" or "QuestFont")
     c.header:SetPoint("TOPLEFT")
-    c.header:SetJustifyH("LEFT")
     c.header:SetText(REPUTATION and (REPUTATION .. ":") or "Reputation:")
     local ref = rewardsFrame.ItemReceiveText
     if ref then
         c.header:SetFontObject(ref:GetFontObject())
         c.header:SetTextColor(ref:GetTextColor())
     end
-    c.text = c:CreateFontString(nil, "ARTWORK", small and "GameFontHighlightSmall" or "GameFontHighlight")
-    c.text:SetPoint("TOPLEFT", c.header, "BOTTOMLEFT", 0, -4)
-    c.text:SetJustifyH("LEFT")
-    c.text:SetWordWrap(true)
     containers[rewardsFrame] = c
     return c
 end
@@ -182,17 +214,26 @@ local function Update(rewardsFrame, questID, isLog)
 
     c:ClearAllPoints()
     c:SetPoint("TOPLEFT", rewardsFrame, "TOPLEFT", leftX, -(startY + 8))
-    local width = rewardsFrame:GetWidth() - leftX - 8
-    c:SetWidth(width)
-    c.text:SetWidth(width)
+    c:SetWidth(rewardsFrame:GetWidth() - leftX)
 
-    local parts = {}
-    for _, r in ipairs(rewards) do
-        parts[#parts + 1] = ("%+d %s"):format(r.amount, r.name)
+    local headerH = c.header:GetStringHeight() + 6
+    local colW = math.floor((rewardsFrame:GetWidth() - leftX) / 2)
+    local rowH
+    for i, r in ipairs(rewards) do
+        local b = c.buttons[i] or CreateRewardButton(c, c.small)
+        c.buttons[i] = b
+        b.factionName, b.amount, b.learned = r.name, r.amount, learned
+        local sign = r.amount > 0 and "|cff00ff00+" or "|cffff2020"
+        b.Name:SetText(r.name .. "\n" .. sign .. r.amount .. "|r")
+        rowH = rowH or (b:GetHeight() + 4)
+        local col, row = (i - 1) % 2, math.floor((i - 1) / 2)
+        b:ClearAllPoints()
+        b:SetPoint("TOPLEFT", c, "TOPLEFT", col * colW, -(headerH + row * rowH))
+        b:Show()
     end
-    c.text:SetText(table.concat(parts, ", "))
+    for i = #rewards + 1, #c.buttons do c.buttons[i]:Hide() end
 
-    local height = c.header:GetStringHeight() + 4 + c.text:GetStringHeight()
+    local height = headerH + math.ceil(#rewards / 2) * rowH
     c:SetHeight(height)
     c:Show()
     local oldH = rewardsFrame:GetHeight()
