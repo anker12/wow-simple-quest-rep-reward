@@ -12,12 +12,15 @@ local CAPTURE_WINDOW = 1.5 -- seconds around a turn-in that rep gains count
 QuestRepRewardDB = QuestRepRewardDB or {}
 
 local debug = { hookCalls = 0 } -- state shown by /qrr
-local rawSeen = {} -- [questID] = { [factionName] = raw API value }, for calibration
 
--- The quest-log faction API returns scaled numbers. We start by assuming
--- hundredths and correct the scale from real turn-ins (see Record below).
-local function Scale()
-    return QuestRepRewardDB._scale or 0.01
+QuestRepRewardDB._scale = nil -- no longer used; the API is in hundredths
+
+-- Questie's quest database, if Questie is installed.
+local function GetQuestieDB()
+    if not QuestieLoader or not QuestieLoader.ImportModule then return nil end
+    local ok, db = pcall(QuestieLoader.ImportModule, QuestieLoader, "QuestieDB")
+    if ok and type(db) == "table" and type(db.QueryQuestSingle) == "function" then return db end
+    return nil
 end
 
 ---------------------------------------------------------------------------
@@ -86,12 +89,26 @@ local function GetRepRewards(questID, isLog)
             local factionID, amount = GetQuestLogRewardFactionInfo(i)
             local name = factionID and FactionName(factionID)
             if name and amount and amount ~= 0 then
-                rawSeen[questID] = rawSeen[questID] or {}
-                rawSeen[questID][name] = amount
-                list[#list + 1] = { name = name, amount = math.floor(amount * Scale() + 0.5) }
+                list[#list + 1] = { name = name, amount = math.floor(amount / 100 + 0.5) }
             end
         end
         if swap and selected and selected ~= 0 then C_QuestLog.SetSelectedQuest(selected) end
+    end
+
+    -- Questie's database: also covers quests that aren't in your log yet.
+    if #list == 0 and questID then
+        local db = GetQuestieDB()
+        local ok, rep = false, nil
+        if db then ok, rep = pcall(db.QueryQuestSingle, questID, "reputationReward") end
+        if ok and type(rep) == "table" then
+            for _, r in ipairs(rep) do
+                local factionID, amount = type(r) == "table" and r[1], type(r) == "table" and r[2]
+                local name = type(factionID) == "number" and FactionName(factionID)
+                if name and type(amount) == "number" and amount ~= 0 then
+                    list[#list + 1] = { name = name, amount = amount }
+                end
+            end
+        end
     end
 
     return list, false
@@ -303,10 +320,6 @@ local function Record(questID, name, amount)
         QuestRepRewardDB[questID] = entry
     end
     entry[name] = (entry[name] or 0) + amount
-    local raw = rawSeen[questID] and rawSeen[questID][name]
-    if raw and raw ~= 0 and entry[name] ~= 0 then
-        QuestRepRewardDB._scale = entry[name] / raw
-    end
     print(("|cffffd200QuestRepReward:|r learned %+d %s for quest %d"):format(amount, name, questID))
 end
 
@@ -380,7 +393,7 @@ SlashCmdList.QUESTREPREWARD = function()
             end
         end
     end
-    P("learned quests:", n, "| scale:", tostring(QuestRepRewardDB._scale or "default 0.01"),
+    P("learned quests:", n, "| Questie DB:", GetQuestieDB() and "found" or "not found",
       "| last rep chat message:", tostring(debug.lastRepMsg))
     P("rep patterns:", #patterns, "| FACTION_STANDING_INCREASED =", tostring(FACTION_STANDING_INCREASED))
 
@@ -401,6 +414,17 @@ SlashCmdList.QUESTREPREWARD = function()
     P("rep reward APIs:", #found > 0 and table.concat(found, ", ") or "none")
 
     local qid = C_QuestLog and C_QuestLog.GetSelectedQuest and C_QuestLog.GetSelectedQuest()
+    local db = qid and qid ~= 0 and GetQuestieDB()
+    if db then
+        local ok, rep = pcall(db.QueryQuestSingle, qid, "reputationReward")
+        local parts = {}
+        if ok and type(rep) == "table" then
+            for _, r in ipairs(rep) do
+                if type(r) == "table" then parts[#parts + 1] = tostring(r[1]) .. "=" .. tostring(r[2]) end
+            end
+        end
+        P("Questie rep for", qid, ok and (#parts > 0 and table.concat(parts, ", ") or "none") or ("error: " .. tostring(rep)))
+    end
     if qid and qid ~= 0 and GetNumQuestLogRewardFactions then
         P("selected quest", qid, "GetNumQuestLogRewardFactions =", tostring(GetNumQuestLogRewardFactions()))
         for i = 1, (GetNumQuestLogRewardFactions() or 0) do

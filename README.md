@@ -10,6 +10,9 @@ Copy the `QuestRepReward` folder into `World of Warcraft/_forever_/Interface/Add
 (the folder for your Forever client) and enable it on the character select screen.
 
 ## Where the numbers come from
-1. The client's quest reputation API, when it has one for that quest.
-2. Otherwise, what the addon has seen you earn when turning that quest in on any character
-   (saved account-wide). Hover a reputation reward to see if it is a learned value.
+1. What you actually earned when you turned that quest in before (saved account-wide).
+2. The game's quest-log reputation API (quests in your log).
+3. [Questie](https://www.curseforge.com/wow/addons/questie)'s quest database, if installed
+   (also covers quests offered by an NPC that aren't in your log yet).
+
+Type `/qrr` in chat for diagnostics.
