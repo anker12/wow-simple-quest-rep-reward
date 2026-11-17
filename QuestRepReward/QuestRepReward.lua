@@ -11,6 +11,8 @@ local CAPTURE_WINDOW = 1.5 -- seconds around a turn-in that rep gains count
 
 QuestRepRewardDB = QuestRepRewardDB or {}
 
+local debug = { hookCalls = 0 } -- state shown by /qrr
+
 ---------------------------------------------------------------------------
 -- Helpers
 ---------------------------------------------------------------------------
@@ -48,6 +50,17 @@ local function GetRepRewards(questID, isLog)
         AddApiRewards(list, C_QuestLog.GetQuestLogMajorFactionReputationRewards(questID))
     elseif not isLog and C_QuestOffer and C_QuestOffer.GetQuestOfferMajorFactionReputationRewards then
         AddApiRewards(list, C_QuestOffer.GetQuestOfferMajorFactionReputationRewards())
+    end
+
+    -- Older-style API (exists on some clients): factionID, amount per reward.
+    if #list == 0 and isLog and GetNumQuestLogRewardFactions and GetQuestLogRewardFactionInfo then
+        for i = 1, (GetNumQuestLogRewardFactions() or 0) do
+            local factionID, amount = GetQuestLogRewardFactionInfo(i)
+            local name = factionID and FactionName(factionID)
+            if name and amount and amount ~= 0 then
+                list[#list + 1] = { name = name, amount = amount }
+            end
+        end
     end
 
     if #list == 0 and questID then
@@ -149,6 +162,7 @@ local function Update(template)
     for _, c in pairs(containers) do c:Hide() end
 
     local rewardsFrame = QuestInfoFrame and QuestInfoFrame.rewardsFrame
+    debug.lastRewardsFrame = rewardsFrame and (rewardsFrame:GetName() or "unnamed") .. (rewardsFrame:IsShown() and " (shown)" or " (hidden)") or "none"
     if not rewardsFrame or not rewardsFrame:IsShown() then return end
 
     local isLog = template and template.questLog
@@ -161,6 +175,7 @@ local function Update(template)
     if not questID or questID == 0 then return end
 
     local rewards = GetRepRewards(questID, isLog)
+    debug.lastQuest, debug.lastIsLog, debug.lastCount = questID, isLog, #rewards
     if #rewards == 0 then return end
 
     local c = GetContainer(rewardsFrame)
@@ -202,8 +217,12 @@ end
 
 if QuestInfo_Display then
     hooksecurefunc("QuestInfo_Display", function(template)
+        debug.hookCalls = debug.hookCalls + 1
         local ok, err = pcall(Update, template)
-        if not ok then geterrorhandler()(err) end
+        if not ok then
+            debug.lastError = err
+            geterrorhandler()(err)
+        end
     end)
 end
 
@@ -245,6 +264,7 @@ local function Record(questID, name, amount)
         QuestRepRewardDB[questID] = entry
     end
     entry[name] = (entry[name] or 0) + amount
+    print(("|cffffd200QuestRepReward:|r learned %+d %s for quest %d"):format(amount, name, questID))
 end
 
 local function Finish()
@@ -273,6 +293,7 @@ f:SetScript("OnEvent", function(_, event, arg1)
     end
 
     -- CHAT_MSG_COMBAT_FACTION_CHANGE
+    debug.lastRepMsg = arg1
     if issecretvalue and issecretvalue(arg1) then return end
     if type(arg1) ~= "string" then return end
     for _, p in ipairs(patterns) do
@@ -290,3 +311,48 @@ f:SetScript("OnEvent", function(_, event, arg1)
         end
     end
 end)
+
+---------------------------------------------------------------------------
+-- /qrr: diagnostics
+---------------------------------------------------------------------------
+
+local function P(...) print("|cffffd200QRR:|r", ...) end
+
+SLASH_QUESTREPREWARD1 = "/qrr"
+SlashCmdList.QUESTREPREWARD = function()
+    local _, _, _, toc = GetBuildInfo()
+    P("client interface", tostring(toc), "| QuestInfo_Display:", type(QuestInfo_Display),
+      "| hook calls:", debug.hookCalls)
+    P("rewards frame:", tostring(debug.lastRewardsFrame), "| last quest:", tostring(debug.lastQuest),
+      "log:", tostring(debug.lastIsLog), "| rep rewards found:", tostring(debug.lastCount))
+    if debug.lastError then P("|cffff4040last error:|r", tostring(debug.lastError)) end
+
+    local n = 0
+    for _ in pairs(QuestRepRewardDB) do n = n + 1 end
+    P("learned quests:", n, "| last rep chat message:", tostring(debug.lastRepMsg))
+    P("rep patterns:", #patterns, "| FACTION_STANDING_INCREASED =", tostring(FACTION_STANDING_INCREASED))
+
+    -- Any quest/reputation reward functions this client exposes.
+    local found = {}
+    for k, v in pairs(_G) do
+        if type(k) == "string" and type(v) == "function" and k:find("Reward") and (k:find("Faction") or k:find("Reput")) then
+            found[#found + 1] = k
+        elseif type(k) == "string" and k:sub(1, 2) == "C_" and type(v) == "table" then
+            for fk, fv in pairs(v) do
+                if type(fk) == "string" and type(fv) == "function" and (fk:find("Reput") or fk:find("Faction")) and (fk:find("Reward") or fk:find("Quest")) then
+                    found[#found + 1] = k .. "." .. fk
+                end
+            end
+        end
+    end
+    table.sort(found)
+    P("rep reward APIs:", #found > 0 and table.concat(found, ", ") or "none")
+
+    local qid = C_QuestLog and C_QuestLog.GetSelectedQuest and C_QuestLog.GetSelectedQuest()
+    if qid and qid ~= 0 and GetNumQuestLogRewardFactions then
+        P("selected quest", qid, "GetNumQuestLogRewardFactions =", tostring(GetNumQuestLogRewardFactions()))
+        for i = 1, (GetNumQuestLogRewardFactions() or 0) do
+            P("  faction reward", i, GetQuestLogRewardFactionInfo(i))
+        end
+    end
+end
