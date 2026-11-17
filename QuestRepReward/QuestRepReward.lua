@@ -12,6 +12,13 @@ local CAPTURE_WINDOW = 1.5 -- seconds around a turn-in that rep gains count
 QuestRepRewardDB = QuestRepRewardDB or {}
 
 local debug = { hookCalls = 0 } -- state shown by /qrr
+local rawSeen = {} -- [questID] = { [factionName] = raw API value }, for calibration
+
+-- The quest-log faction API returns scaled numbers. We start by assuming
+-- hundredths and correct the scale from real turn-ins (see Record below).
+local function Scale()
+    return QuestRepRewardDB._scale or 0.01
+end
 
 ---------------------------------------------------------------------------
 -- Helpers
@@ -43,8 +50,23 @@ local function AddApiRewards(list, rewards)
     end
 end
 
-local function GetRepRewards(questID, isLog)
+local function GetLearned(questID)
     local list = {}
+    local learned = questID and QuestRepRewardDB[questID]
+    if type(learned) == "table" then
+        for name, amount in pairs(learned) do
+            if type(amount) == "number" and name:sub(1, 1) ~= "_" then
+                list[#list + 1] = { name = name, amount = amount }
+            end
+        end
+        table.sort(list, function(a, b) return a.name < b.name end)
+    end
+    return list
+end
+
+local function GetRepRewards(questID, isLog)
+    local list = GetLearned(questID)
+    if #list > 0 then return list, true end
 
     if isLog and C_QuestLog and C_QuestLog.GetQuestLogMajorFactionReputationRewards then
         AddApiRewards(list, C_QuestLog.GetQuestLogMajorFactionReputationRewards(questID))
@@ -52,30 +74,27 @@ local function GetRepRewards(questID, isLog)
         AddApiRewards(list, C_QuestOffer.GetQuestOfferMajorFactionReputationRewards())
     end
 
-    -- Older-style API (exists on some clients): factionID, amount per reward.
-    if #list == 0 and isLog and GetNumQuestLogRewardFactions and GetQuestLogRewardFactionInfo then
+    -- Older-style API (Forever has this): works on the selected quest-log quest
+    -- and returns factionID plus the amount in hundredths.
+    local inLog = questID and C_QuestLog.GetLogIndexForQuestID and C_QuestLog.GetLogIndexForQuestID(questID)
+    if #list == 0 and inLog and GetNumQuestLogRewardFactions and GetQuestLogRewardFactionInfo then
+        local selected = C_QuestLog.GetSelectedQuest and C_QuestLog.GetSelectedQuest()
+        local swap = selected ~= questID and C_QuestLog.SetSelectedQuest
+        if swap then C_QuestLog.SetSelectedQuest(questID) end
+        if ProcessQuestLogRewardFactions then ProcessQuestLogRewardFactions() end
         for i = 1, (GetNumQuestLogRewardFactions() or 0) do
             local factionID, amount = GetQuestLogRewardFactionInfo(i)
             local name = factionID and FactionName(factionID)
             if name and amount and amount ~= 0 then
-                list[#list + 1] = { name = name, amount = amount }
+                rawSeen[questID] = rawSeen[questID] or {}
+                rawSeen[questID][name] = amount
+                list[#list + 1] = { name = name, amount = math.floor(amount * Scale() + 0.5) }
             end
         end
+        if swap and selected and selected ~= 0 then C_QuestLog.SetSelectedQuest(selected) end
     end
 
-    if #list == 0 and questID then
-        local learned = QuestRepRewardDB[questID]
-        if learned then
-            for name, amount in pairs(learned) do
-                if type(amount) == "number" and name:sub(1, 1) ~= "_" then
-                    list[#list + 1] = { name = name, amount = amount }
-                end
-            end
-            table.sort(list, function(a, b) return a.name < b.name end)
-        end
-    end
-
-    return list
+    return list, false
 end
 
 ---------------------------------------------------------------------------
@@ -158,28 +177,16 @@ local function ContentBottomOffset(rewardsFrame, ignore)
     return lowest
 end
 
-local function Update(template)
-    for _, c in pairs(containers) do c:Hide() end
-
-    local rewardsFrame = QuestInfoFrame and QuestInfoFrame.rewardsFrame
-    debug.lastRewardsFrame = rewardsFrame and (rewardsFrame:GetName() or "unnamed") .. (rewardsFrame:IsShown() and " (shown)" or " (hidden)") or "none"
-    if not rewardsFrame or not rewardsFrame:IsShown() then return end
-
-    local isLog = template and template.questLog
-    local questID
-    if isLog then
-        questID = C_QuestLog.GetSelectedQuest and C_QuestLog.GetSelectedQuest()
-    else
-        questID = GetQuestID and GetQuestID()
-    end
+local function Update(rewardsFrame, questID, isLog)
+    if containers[rewardsFrame] then containers[rewardsFrame]:Hide() end
+    debug.lastRewardsFrame = rewardsFrame:GetName() or "unnamed"
     if not questID or questID == 0 then return end
 
-    local rewards = GetRepRewards(questID, isLog)
+    local rewards, learned = GetRepRewards(questID, isLog)
     debug.lastQuest, debug.lastIsLog, debug.lastCount = questID, isLog, #rewards
     if #rewards == 0 then return end
 
     local c = GetContainer(rewardsFrame)
-    local learned = QuestRepRewardDB[questID] ~= nil
 
     local startY = ContentBottomOffset(rewardsFrame, c) or rewardsFrame:GetHeight()
     local leftX = c.small and 8 or 0
@@ -215,16 +222,48 @@ local function Update(template)
     rewardsFrame:SetHeight(math.max(rewardsFrame:GetHeight(), startY + 8 + height))
 end
 
-if QuestInfo_Display then
-    hooksecurefunc("QuestInfo_Display", function(template)
-        debug.hookCalls = debug.hookCalls + 1
-        local ok, err = pcall(Update, template)
-        if not ok then
-            debug.lastError = err
-            geterrorhandler()(err)
-        end
-    end)
+-- Which quest a visible rewards frame belongs to.
+local function QuestFor(rewardsFrame)
+    local npc = QuestFrame and QuestFrame:IsShown() and rewardsFrame == QuestInfoRewardsFrame
+    if npc then
+        return GetQuestID and GetQuestID(), false
+    end
+    return C_QuestLog.GetSelectedQuest and C_QuestLog.GetSelectedQuest(), true
 end
+
+-- Forever doesn't route its quest panels through one hookable function, so we
+-- simply watch the reward frames and refresh whenever what they show changes.
+local state = {}
+local function Check()
+    for _, name in ipairs({ "MapQuestInfoRewardsFrame", "QuestInfoRewardsFrame" }) do
+        local rf = _G[name]
+        if rf and rf:IsVisible() then
+            local questID, isLog = QuestFor(rf)
+            local sig = tostring(questID) .. ":" .. math.floor(rf:GetHeight() + 0.5)
+            if state[rf] ~= sig then
+                debug.hookCalls = debug.hookCalls + 1
+                local ok, err = pcall(Update, rf, questID, isLog)
+                if not ok then
+                    debug.lastError = err
+                    geterrorhandler()(err)
+                end
+                state[rf] = tostring(questID) .. ":" .. math.floor(rf:GetHeight() + 0.5)
+            end
+        elseif rf then
+            state[rf] = nil
+        end
+    end
+end
+
+local watcher = CreateFrame("Frame")
+local elapsed = 0
+watcher:SetScript("OnUpdate", function(_, dt)
+    elapsed = elapsed + dt
+    if elapsed >= 0.1 then
+        elapsed = 0
+        Check()
+    end
+end)
 
 ---------------------------------------------------------------------------
 -- Learning rep gains from turn-ins
@@ -264,6 +303,10 @@ local function Record(questID, name, amount)
         QuestRepRewardDB[questID] = entry
     end
     entry[name] = (entry[name] or 0) + amount
+    local raw = rawSeen[questID] and rawSeen[questID][name]
+    if raw and raw ~= 0 and entry[name] ~= 0 then
+        QuestRepRewardDB._scale = entry[name] / raw
+    end
     print(("|cffffd200QuestRepReward:|r learned %+d %s for quest %d"):format(amount, name, questID))
 end
 
@@ -321,15 +364,24 @@ local function P(...) print("|cffffd200QRR:|r", ...) end
 SLASH_QUESTREPREWARD1 = "/qrr"
 SlashCmdList.QUESTREPREWARD = function()
     local _, _, _, toc = GetBuildInfo()
-    P("client interface", tostring(toc), "| QuestInfo_Display:", type(QuestInfo_Display),
-      "| hook calls:", debug.hookCalls)
+    P("client interface", tostring(toc), "| updates:", debug.hookCalls,
+      "| frames: map", MapQuestInfoRewardsFrame and tostring(MapQuestInfoRewardsFrame:IsVisible()) or "missing",
+      "npc/log", QuestInfoRewardsFrame and tostring(QuestInfoRewardsFrame:IsVisible()) or "missing")
     P("rewards frame:", tostring(debug.lastRewardsFrame), "| last quest:", tostring(debug.lastQuest),
       "log:", tostring(debug.lastIsLog), "| rep rewards found:", tostring(debug.lastCount))
     if debug.lastError then P("|cffff4040last error:|r", tostring(debug.lastError)) end
 
     local n = 0
-    for _ in pairs(QuestRepRewardDB) do n = n + 1 end
-    P("learned quests:", n, "| last rep chat message:", tostring(debug.lastRepMsg))
+    for qid, entry in pairs(QuestRepRewardDB) do
+        if type(qid) == "number" and type(entry) == "table" then
+            n = n + 1
+            for fname, amt in pairs(entry) do
+                if type(amt) == "number" and fname:sub(1, 1) ~= "_" then P("  learned quest", qid, fname, amt) end
+            end
+        end
+    end
+    P("learned quests:", n, "| scale:", tostring(QuestRepRewardDB._scale or "default 0.01"),
+      "| last rep chat message:", tostring(debug.lastRepMsg))
     P("rep patterns:", #patterns, "| FACTION_STANDING_INCREASED =", tostring(FACTION_STANDING_INCREASED))
 
     -- Any quest/reputation reward functions this client exposes.
@@ -352,7 +404,8 @@ SlashCmdList.QUESTREPREWARD = function()
     if qid and qid ~= 0 and GetNumQuestLogRewardFactions then
         P("selected quest", qid, "GetNumQuestLogRewardFactions =", tostring(GetNumQuestLogRewardFactions()))
         for i = 1, (GetNumQuestLogRewardFactions() or 0) do
-            P("  faction reward", i, GetQuestLogRewardFactionInfo(i))
+            local fid, amt = GetQuestLogRewardFactionInfo(i)
+            P("  faction reward", i, tostring(fid), FactionName(fid or 0) or "?", tostring(amt))
         end
     end
 end

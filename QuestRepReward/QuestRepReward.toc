@@ -2,7 +2,7 @@
 ## Title: Quest Rep Reward
 ## Notes: Shows the reputation a quest gives next to its other rewards.
 ## Author: anker12
-## Version: 1.1.0
+## Version: 1.2.0
 ## SavedVariables: QuestRepRewardDB
 
 QuestRepReward.lua
