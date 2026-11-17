@@ -2,7 +2,7 @@
 ## Title: Quest Rep Reward
 ## Notes: Shows the reputation a quest gives next to its other rewards.
 ## Author: anker12
-## Version: 1.3.0
+## Version: 1.3.1
 ## OptionalDeps: Questie
 ## SavedVariables: QuestRepRewardDB
 

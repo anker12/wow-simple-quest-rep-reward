@@ -236,7 +236,16 @@ local function Update(rewardsFrame, questID, isLog)
     local height = headerH + math.ceil(#rewards / 2) * rowH
     c:SetHeight(height)
     c:Show()
-    rewardsFrame:SetHeight(math.max(rewardsFrame:GetHeight(), startY + 8 + height))
+    local oldH = rewardsFrame:GetHeight()
+    local newH = math.max(oldH, startY + 8 + height)
+    rewardsFrame:SetHeight(newH)
+
+    -- The map panel sizes a holder frame to fit the rewards; grow it too, or
+    -- our rows end up clipped below it.
+    local parent = rewardsFrame:GetParent()
+    if newH > oldH and parent and parent ~= UIParent and math.abs(parent:GetHeight() - oldH) < 2 then
+        parent:SetHeight(newH)
+    end
 end
 
 -- Which quest a visible rewards frame belongs to.
@@ -270,6 +279,31 @@ local function Check()
             state[rf] = nil
         end
     end
+end
+
+-- Run inside Blizzard's own layout when it goes through QuestInfo_Display, so
+-- the panels size themselves around our rows. The watcher above catches the rest.
+if QuestInfo_Display then
+    hooksecurefunc("QuestInfo_Display", function(template)
+        local rf = QuestInfoFrame and QuestInfoFrame.rewardsFrame
+        if not rf or not rf:IsShown() then return end
+        local questID, isLog = QuestFor(rf)
+        if template and template.questLog ~= nil and rf ~= MapQuestInfoRewardsFrame then
+            isLog = template.questLog
+            if isLog then
+                questID = C_QuestLog.GetSelectedQuest and C_QuestLog.GetSelectedQuest()
+            else
+                questID = GetQuestID and GetQuestID()
+            end
+        end
+        debug.hookCalls = debug.hookCalls + 1
+        local ok, err = pcall(Update, rf, questID, isLog)
+        if not ok then
+            debug.lastError = err
+            geterrorhandler()(err)
+        end
+        state[rf] = tostring(questID) .. ":" .. math.floor(rf:GetHeight() + 0.5)
+    end)
 end
 
 local watcher = CreateFrame("Frame")
